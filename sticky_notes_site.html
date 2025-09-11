@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lavagna - Fogli di Block Notes</title>
+  <style>
+    :root{--bg:#f4f4f8;--note:#fff;--accent:#1f6feb}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    body{background:linear-gradient(180deg,var(--bg),#eef2f8);padding:16px}
+    header{display:flex;gap:12px;align-items:center;margin-bottom:12px}
+    h1{font-size:18px;margin:0}
+    .controls{margin-left:auto;display:flex;gap:8px}
+    button{background:var(--accent);color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer}
+    button.ghost{background:transparent;color:var(--accent);border:1px solid rgba(0,0,0,0.08)}
+    #board{position:relative;width:100%;height:75vh;border-radius:8px;box-shadow:0 6px 20px rgba(20,20,60,0.06);background:linear-gradient(0deg,#ffffffcc, #ffffffcc);overflow:hidden}
+    .note{position:absolute;width:200px;min-height:120px;padding:10px;border-radius:8px;box-shadow:0 8px 18px rgba(20,20,60,0.08);background:var(--note);resize:none;overflow:auto}
+    .note .toolbar{display:flex;gap:6px;justify-content:flex-end;margin-bottom:6px}
+    .color{width:16px;height:16px;border-radius:4px;border:1px solid rgba(0,0,0,0.06);cursor:pointer}
+    .note .content{min-height:70px;outline:none}
+    footer{margin-top:12px;color:#444;font-size:13px}
+    input[type=file]{display:none}
+    .small{padding:6px 8px;font-size:13px;border-radius:6px}
+    @media (max-width:700px){#board{height:60vh}.note{width:160px}}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Lavagna — Fogli di Block Notes</h1>
+    <div style="color:#666;font-size:13px">Aperta, senza registrazione — salva localmente o condividi il link</div>
+
+    <div class="controls">
+      <button id="add">Aggiungi nota</button>
+      <button id="export" class="ghost small">Esporta JSON</button>
+      <button id="importBtn" class="ghost small">Importa</button>
+      <input id="importFile" type="file" accept="application/json">
+      <button id="share" class="ghost small">Genera link condivisibile</button>
+      <button id="clear" class="ghost small">Pulisci</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="board" aria-label="Lavagna di note"></div>
+    <footer>Tip: trascina le note per posizionarle. I contenuti sono salvati localmente nel browser e possono essere condivisi tramite link.</footer>
+  </main>
+
+  <script>
+    // Simple sticky-notes board: single-file, no backend. Data saved to localStorage and can be encoded into URL.
+    const board = document.getElementById('board');
+    const ADD = document.getElementById('add');
+    const EXPORT = document.getElementById('export');
+    const IMPORT = document.getElementById('importBtn');
+    const IMPORT_FILE = document.getElementById('importFile');
+    const SHARE = document.getElementById('share');
+    const CLEAR = document.getElementById('clear');
+
+    const STORAGE_KEY = 'calascio_notes_v1';
+
+    let notes = {};
+    let zIndex = 1;
+
+    function uid(){return 'n_'+Math.random().toString(36).slice(2,9)}
+
+    function makeNote(data){
+      const id = data.id || uid();
+      const el = document.createElement('div');
+      el.className = 'note';
+      el.dataset.id = id;
+      el.style.left = (data.x ?? 40) + 'px';
+      el.style.top = (data.y ?? 40) + 'px';
+      el.style.width = (data.w ?? 200) + 'px';
+      el.style.zIndex = (data.z ?? ++zIndex);
+      el.style.background = data.color || '#fff8b0';
+
+      el.innerHTML = `
+        <div class="toolbar">
+          <div class="color" title="Giallo" data-color="#fff8b0" style="background:#fff8b0"></div>
+          <div class="color" title="Verde" data-color="#d2ffd6" style="background:#d2ffd6"></div>
+          <div class="color" title="Blu" data-color="#d9ecff" style="background:#d9ecff"></div>
+          <button class="del" title="Elimina" style="background:transparent;border:none;cursor:pointer">✖</button>
+        </div>
+        <div class="content" contenteditable="true" spellcheck="true">${escapeHtml(data.text || '')}</div>
+      `;
+
+      board.appendChild(el);
+      notes[id] = {id,x:parseInt(el.style.left),y:parseInt(el.style.top),w:parseInt(el.style.width),text:data.text||'',color:el.style.background,z:el.style.zIndex};
+
+      // events
+      el.querySelector('.del').addEventListener('click', ()=>{ el.remove(); delete notes[id]; save(); });
+      el.querySelectorAll('.color').forEach(c=>c.addEventListener('click',(e)=>{ el.style.background = e.target.dataset.color; notes[id].color = e.target.dataset.color; save(); }));
+
+      const content = el.querySelector('.content');
+      content.addEventListener('input', ()=>{ notes[id].text = content.innerHTML; save(); });
+
+      // drag
+      makeDraggable(el);
+
+      return el;
+    }
+
+    function makeDraggable(el){
+      let startX, startY, sx, sy, dragging=false;
+      function down(e){
+        e.preventDefault();
+        el.style.zIndex = ++zIndex;
+        notes[el.dataset.id].z = el.style.zIndex;
+        dragging = true;
+        const p = getPointer(e);
+        startX = p.x; startY = p.y; sx = parseInt(el.style.left); sy = parseInt(el.style.top);
+        document.addEventListener('pointermove', move);
+        document.addEventListener('pointerup', up);
+      }
+      function move(e){ if(!dragging) return; const p=getPointer(e); el.style.left = (sx + p.x - startX) + 'px'; el.style.top = (sy + p.y - startY) + 'px'; }
+      function up(){ dragging=false; notes[el.dataset.id].x = parseInt(el.style.left); notes[el.dataset.id].y = parseInt(el.style.top); save(); document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); }
+      el.addEventListener('pointerdown', down);
+    }
+
+    function getPointer(e){ if(e.touches) return {x:e.touches[0].clientX,y:e.touches[0].clientY}; return {x:e.clientX,y:e.clientY}; }
+
+    function save(){
+      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(notes)); }
+      catch(e){ console.warn('Errore salvataggio',e); }
+    }
+
+    function load(){
+      // try URL first
+      const hash = location.hash.replace('#','');
+      if(hash){
+        try{
+          const decoded = atob(decodeURIComponent(hash));
+          const obj = JSON.parse(decoded);
+          if(obj && typeof obj === 'object'){ notes = {}; board.innerHTML = ''; for(const id in obj){ makeNote(obj[id]); } save(); return; }
+        }catch(e){}
+      }
+      // then localStorage
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(raw){ try{ const obj = JSON.parse(raw); notes={}; board.innerHTML = ''; for(const id in obj){ makeNote(obj[id]); } }catch(e){ console.warn('load error',e);} }
+    }
+
+    function clearAll(){ if(!confirm('Pulisci la lavagna? Questa azione non è reversibile.')) return; notes={}; board.innerHTML=''; localStorage.removeItem(STORAGE_KEY); location.hash=''; }
+
+    function exportJSON(){ const data = JSON.stringify(notes, null, 2); const blob = new Blob([data], {type:'application/json'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='lavagna_notes.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    }
+
+    function importJSONFile(file){ const r=new FileReader(); r.onload=function(e){ try{ const obj = JSON.parse(e.target.result); notes={}; board.innerHTML=''; for(const id in obj){ makeNote(obj[id]); } save(); alert('Import completato'); }catch(err){ alert('File non valido'); }}; r.readAsText(file);
+    }
+
+    function generateShareLink(){
+      try{
+        const str = JSON.stringify(notes);
+        const enc = encodeURIComponent(btoa(str));
+        const url = location.origin + location.pathname + '#' + enc;
+        prompt('Link condivisibile (copialo):', url);
+      }catch(e){ alert('Impossibile generare link'); }
+    }
+
+    function escapeHtml(s){ if(!s) return ''; return s.replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+
+    // controls
+    ADD.addEventListener('click', ()=>{ const n = makeNote({}); // focus content
+      setTimeout(()=>{ const el = board.querySelector('.note:last-child .content'); if(el){ el.focus(); const sel = window.getSelection(); sel.collapse(el,1); } },80); save(); });
+    EXPORT.addEventListener('click', exportJSON);
+    IMPORT.addEventListener('click', ()=>IMPORT_FILE.click());
+    IMPORT_FILE.addEventListener('change', (ev)=>{ if(ev.target.files.length) importJSONFile(ev.target.files[0]); ev.target.value=''; });
+    SHARE.addEventListener('click', generateShareLink);
+    CLEAR.addEventListener('click', clearAll);
+
+    // initial load
+    load();
+
+    // small UX: double-click on board to create note
+    board.addEventListener('dblclick', (e)=>{
+      const rect = board.getBoundingClientRect();
+      const x = e.clientX - rect.left; const y = e.clientY - rect.top;
+      const n = makeNote({x:Math.max(8, x-80), y:Math.max(8, y-40)});
+      save();
+    });
+
+  </script>
+</body>
+</html>
